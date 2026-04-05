@@ -1,13 +1,110 @@
 import random
 import json
 import os
+import re
+import shutil
 from pathlib import Path
+import uuid
 
 
-def shuffle_segments_between_marker_pairs(project_path):
+def _rename_project_folder_and_update_metadata(project_path):
     """
-    Load a CapCut project, shuffle video segments between marker pairs,
-    and save changes back.
+    Rename the project folder with " - shuffled" suffix and update draft_meta_info.json
+    to force CapCut to read the modified draft_content.json instead of cache.
+    
+    Supports multiple shuffles with automatic numbering:
+    - First shuffle: "Project Name - shuffled"
+    - Second shuffle: "Project Name - shuffled (1)"
+    - Third shuffle: "Project Name - shuffled (2)"
+    - etc.
+    
+    PARAMETERS
+    ----------
+    project_path : str
+        Path to the CapCut project folder
+    
+    RETURNS
+    -------
+    str
+        The new project path after renaming
+    """
+    print("\n🔄 CACHE-BUSTER: Renaming project folder to force CapCut cache refresh...")
+    
+    project_path_obj = Path(project_path)
+    parent_dir = project_path_obj.parent
+    current_name = project_path_obj.name
+    
+    # Check if already has numbered version like " - shuffled (1)"
+    match = re.search(r' - shuffled \((\d+)\)$', current_name)
+    if match:
+        # Already has a number, increment it
+        current_num = int(match.group(1))
+        new_name = re.sub(r' - shuffled \(\d+\)$', f' - shuffled ({current_num + 1})', current_name)
+    elif " - shuffled" in current_name:
+        # Has " - shuffled" but no number yet
+        new_name = f"{current_name} (1)"
+    else:
+        # First time, just add " - shuffled"
+        new_name = f"{current_name} - shuffled"
+    
+    new_project_path = parent_dir / new_name
+    
+    # Rename the folder
+    if new_project_path.exists():
+        print(f"   ⚠ Target folder already exists: {new_name}")
+        print(f"   Removing old version...")
+        shutil.rmtree(new_project_path)
+    
+    print(f"   Renaming: {current_name} → {new_name}")
+    project_path_obj.rename(new_project_path)
+    print(f"   ✓ Folder renamed successfully")
+    
+    # Find and update draft_meta_info.json for this specific project only
+    meta_file = new_project_path / "draft_meta_info.json"
+    
+    if meta_file.exists():
+        try:
+            print(f"   Updating metadata: {meta_file.name}")
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                meta_data = json.load(f)
+            
+            # Update the draft_fold_path to match new folder name
+            if 'draft_fold_path' in meta_data:
+                old_path = meta_data['draft_fold_path']
+                # Replace the folder name in the path
+                new_path = old_path.replace(current_name, new_name)
+                meta_data['draft_fold_path'] = new_path
+                
+                print(f"       Old path: {old_path}")
+                print(f"       New path: {new_path}")
+            
+            # Modify draft_id by removing last 7 characters to bypass cache
+            if 'draft_id' in meta_data:
+                old_draft_id = meta_data['draft_id']
+                # Delete last 7 characters from draft_id
+                new_draft_id = str(uuid.uuid4()).upper()
+                meta_data['draft_id'] = new_draft_id
+                
+                print(f"       Old draft_id: {old_draft_id}")
+                print(f"       New draft_id: {new_draft_id}")
+                print(f"       (Removed 7 characters to bypass cache)")
+            
+            with open(meta_file, 'w', encoding='utf-8') as f:
+                json.dump(meta_data, f, indent=2)
+            print(f"   ✓ Metadata updated")
+        except Exception as e:
+            print(f"   ⚠ Warning: Could not update metadata at {meta_file}: {str(e)}")
+    else:
+        print(f"   ℹ No draft_meta_info.json found in {new_project_path}")
+    
+    return str(new_project_path)
+
+
+def shuffle_segments_between_marker_pairs(project_path, force_cache_bust=True):
+    """
+    Load all CapCut project draft files, shuffle video segments between marker pairs,
+    and save changes back. Supports multiple draft_content.json files.
+    Optionally renames the folder to force CapCut to read modified content instead of cache.
     
     Marker pairs are processed sequentially:
     - (marker[0], marker[1])
@@ -20,42 +117,68 @@ def shuffle_segments_between_marker_pairs(project_path):
     project_path : str
         Path to the CapCut project folder
         (e.g., 'C:\\Users\\YourName\\AppData\\Local\\CapCut\\User Data\\Projects\\...')
+        Will recursively find all draft_content.json files
+    force_cache_bust : bool, default=True
+        If True, renames the project folder and updates draft_meta_info.json
+        to force CapCut to read the modified content instead of cache
     
     RETURNS
     -------
     None
-        Modifies the project in-place and saves changes
+        Modifies all project files in-place and saves changes
     """
     
     # =========================================================================
-    # STEP 1: Load the draft_content.json directly
+    # STEP 0: Cache-bust by renaming folder (optional)
     # =========================================================================
-    print("\n🔄 STEP 1: Loading draft_content.json...")
-    draft_json_path = os.path.join(project_path, "draft_content.json")
-    print(f"   Project path: {project_path}")
-    print(f"   Looking for: {draft_json_path}")
-
-    if not os.path.exists(draft_json_path):
-        raise ValueError("draft_content.json not found in project folder")
-
-    with open(draft_json_path, 'r', encoding='utf-8') as f:
-        project_data = json.load(f)
-    print("   ✓ Successfully loaded draft_content.json")
+    if force_cache_bust:
+        project_path = _rename_project_folder_and_update_metadata(project_path)
     
     # =========================================================================
-    # STEP 2: Process shuffling on the original structure
+    # STEP 1: Find all draft_content.json files in project folder
     # =========================================================================
-    print("\n🔄 STEP 2: Starting shuffling process...")
-    _shuffle_in_draft_format(project_data)
-    print("   ✓ Shuffling completed")
+    print("\n🔄 STEP 1: Finding all draft_content.json files...")
+    project_path_obj = Path(project_path)
+    draft_json_files = list(project_path_obj.rglob("draft_content.json"))
+    
+    if not draft_json_files:
+        raise ValueError("No draft_content.json files found in project folder")
+    
+    print(f"   Found {len(draft_json_files)} draft_content.json file(s):")
+    for file_path in draft_json_files:
+        relative_path = file_path.relative_to(project_path_obj)
+        print(f"      - {relative_path}")
     
     # =========================================================================
-    # STEP 3: Write back to the original file
+    # STEP 2: Process each draft_content.json file
     # =========================================================================
-    print("\n🔄 STEP 3: Writing changes back to draft_content.json...")
-    with open(draft_json_path, 'w', encoding='utf-8') as f:
-        json.dump(project_data, f, indent=2)
-    print("   ✓ Successfully saved changes")
+    print("\n🔄 STEP 2: Processing shuffling on all files...")
+    
+    for draft_json_path in draft_json_files:
+        print(f"\n   Processing: {draft_json_path.name}")
+        
+        try:
+            # Load the file
+            with open(draft_json_path, 'r', encoding='utf-8') as f:
+                project_data = json.load(f)
+            
+            # Apply shuffling
+            _shuffle_in_draft_format(project_data)
+            
+            # Save changes
+            with open(draft_json_path, 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, indent=2)
+            
+            print(f"   ✓ Successfully processed and saved")
+        
+        except ValueError as e:
+            print(f"   ⚠ Skipped: {str(e)}")
+        except Exception as e:
+            print(f"   ⚠ Error processing {draft_json_path.name}: {str(e)}")
+    
+    # =========================================================================
+    # STEP 3: Final summary
+    # =========================================================================
     
     print(f"\n✅ Successfully shuffled segments in: {project_path}\n")
 

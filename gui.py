@@ -31,7 +31,8 @@ class CapCutShuffleGUI:
         self.folder_label = tk.Label(folder_button_frame, text="No folder selected", fg="gray")
         self.folder_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        tk.Button(folder_button_frame, text="Browse", command=self.select_folder, width=12).pack(side=tk.RIGHT)
+        tk.Button(folder_button_frame, text="Browse", command=self.select_folder, width=12).pack(side=tk.RIGHT, padx=2)
+        tk.Button(folder_button_frame, text="Refresh", command=self.load_projects, width=12).pack(side=tk.RIGHT, padx=2)
         
         # =====================================================================
         # STEP 2: Search Section
@@ -70,6 +71,22 @@ class CapCutShuffleGUI:
         
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=5)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # =====================================================================
+        # STEP 3.5: Cache Bust Option
+        # =====================================================================
+        options_frame = tk.Frame(root, padx=10, pady=5)
+        options_frame.pack(fill=tk.X)
+        
+        self.cache_bust_var = tk.BooleanVar(value=True)
+        cache_bust_checkbox = tk.Checkbutton(
+            options_frame,
+            text="Force CapCut cache refresh (rename folder & update metadata)",
+            variable=self.cache_bust_var,
+            font=("Arial", 9),
+            anchor=tk.W
+        )
+        cache_bust_checkbox.pack(fill=tk.X)
         
         # =====================================================================
         # STEP 4: Process Button
@@ -197,6 +214,7 @@ class CapCutShuffleGUI:
         
         processed_count = 0
         failed_projects = []
+        cache_bust_enabled = self.cache_bust_var.get()
         
         for project_name in selected_projects:
             try:
@@ -204,7 +222,10 @@ class CapCutShuffleGUI:
                 
                 # Run shuffle function with project folder path
                 # The function handles loading, processing, and syncing automatically
-                shuffle_segments_between_marker_pairs(project_folder_path)
+                shuffle_segments_between_marker_pairs(
+                    project_folder_path,
+                    force_cache_bust=cache_bust_enabled
+                )
                 processed_count += 1
             
             except ValueError as e:
